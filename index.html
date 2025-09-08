@@ -3,28 +3,31 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-  <title>모바일 웹 · 광각(일반) 후면 카메라 자동 실행 (Clean Build)</title>
+  <title>모바일 웹 · 광각(일반) 후면 카메라 + 수동 선택</title>
   <style>
     :root { --bg:#0b1220; --fg:#e6edf3; --muted:#8b98ab; --card:#111a2b; --accent:#3ea6ff; }
-    html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui, -apple-system, Segoe UI, Roboto, Noto Sans KR, Apple SD Gothic Neo, sans-serif}
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Noto Sans KR,Apple SD Gothic Neo,sans-serif}
     .wrap{max-width:820px;margin:0 auto;padding:16px}
-    header{display:flex;justify-content:space-between;align-items:center;gap:8px}
+    header{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
     h1{font-size:16px;margin:0}
     .card{background:var(--card);border-radius:16px;padding:12px}
-    .row{display:flex;gap:12px;flex-wrap:wrap}
+    .row{display:flex;gap:8px;flex-wrap:wrap}
+    select,button{border:none;border-radius:12px;padding:10px 12px}
+    button{background:var(--accent);color:#061220;font-weight:700;cursor:pointer}
+    button[disabled]{opacity:.45;cursor:not-allowed}
     video{width:100%;max-height:70vh;background:#000;border-radius:12px}
     .meta{display:flex;gap:12px;flex-wrap:wrap;color:var(--muted);font-size:13px}
-    button{background:var(--accent);color:#061220;border:none;border-radius:12px;padding:10px 14px;font-weight:700;cursor:pointer}
-    button[disabled]{opacity:.45;cursor:not-allowed}
-    .mono{font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace}
     .small{font-size:12px;color:var(--muted)}
   </style>
 </head>
 <body>
   <div class="wrap">
     <header>
-      <h1>광각(일반) 후면 카메라 자동 실행 (Clean)</h1>
+      <h1>광각(일반) 후면 카메라 + 수동 선택</h1>
       <div class="row">
+        <select id="cameraSelect" title="카메라 선택"></select>
+        <button id="btnRefresh" title="카메라 목록 갱신">목록 새로고침</button>
         <button id="btnStart">카메라 시작</button>
         <button id="btnSwitch">다른 카메라 시도</button>
         <button id="btnStop" disabled>정지</button>
@@ -54,12 +57,11 @@
 <script>
 (function(){
   'use strict';
-
-  // ====== helpers
-  const $ = (sel)=>document.querySelector(sel);
+  const $ = (s)=>document.querySelector(s);
   const els = {
     video: $('#preview'), status: $('#status'), chosen: $('#chosen'),
     btnStart: $('#btnStart'), btnStop: $('#btnStop'), btnSwitch: $('#btnSwitch'),
+    btnRefresh: $('#btnRefresh'), sel: $('#cameraSelect'),
     sec: $('#secctx'), ua: $('#ua'), perm: $('#perm'), err: $('#err')
   };
   const ua = navigator.userAgent || '';
@@ -67,117 +69,68 @@
 
   function setStatus(t){ els.status.textContent = t; }
   function setError(e){ if(!e) return; const msg = [e.name, e.message].filter(Boolean).join(': '); els.err.textContent = msg; console.error(e); }
-
-  // show diagnostics
   els.sec.textContent = (window.isSecureContext ? 'SECURE (https/localhost)' : 'NOT SECURE');
   els.ua.textContent = ua;
-  (async()=>{
-    try { const p = await (navigator.permissions && navigator.permissions.query ? navigator.permissions.query({name:'camera'}) : null); els.perm.textContent = p ? p.state : 'unknown'; }
-    catch { els.perm.textContent = 'unknown'; }
-  })();
+  (async()=>{ try{ const p = await (navigator.permissions?.query?.({name:'camera'})); els.perm.textContent = p ? p.state : 'unknown'; }catch{ els.perm.textContent='unknown'; } })();
 
   let currentStream = null; let triedDeviceIds = new Set();
+  const storageKey = 'preferredDeviceId_v1';
 
-  function stopCurrent(){
-    if(currentStream){ currentStream.getTracks().forEach(t=>t.stop()); currentStream = null; }
-    els.video.srcObject = null; els.btnStop.disabled = true;
+  function stopCurrent(){ if(currentStream){ currentStream.getTracks().forEach(t=>t.stop()); currentStream=null; } els.video.srcObject=null; els.btnStop.disabled=true; }
+
+  function scoreForWide(label){ const L=(label||'').toLowerCase(); let s=0; if (/(back|rear|environment|main|standard|wide|1x)/.test(L)) s+=3; if (/\b(wide|standard|main)\b/.test(L)) s+=4; if (/(tele|zoom|3x|5x|10x)/.test(L)) s-=6; if (/(ultra[-\s]?wide|0\.5x|ultra)/.test(L)) s-=4; if (/macro/.test(L)) s-=4; if (/back.*wide/.test(L)) s+=2; return s; }
+
+  async function ensureLabels(){ if (!window.isSecureContext) throw new Error('보안 컨텍스트가 아닙니다. https 또는 localhost에서 여세요.');
+    try{ const t=await navigator.mediaDevices.getUserMedia({video:{facingMode:{exact:'environment'}}}); t.getTracks().forEach(x=>x.stop()); }
+    catch{ try{ const t2=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}}); t2.getTracks().forEach(x=>x.stop()); } catch(e){ setError(e); } }
   }
 
-  function scoreForWide(label){
-    const L = (label||'').toLowerCase();
-    let s = 0;
-    if (/(back|rear|environment|main|standard|wide|1x)/.test(L)) s += 3;
-    if (/\b(wide|standard|main)\b/.test(L)) s += 4;
-    if (/(tele|zoom|3x|5x|10x)/.test(L)) s -= 6;
-    if (/(ultra[-\s]?wide|0\.5x|ultra)/.test(L)) s -= 4;
-    if (/macro/.test(L)) s -= 4;
-    if (/back.*wide/.test(L)) s += 2;
-    return s;
-  }
-
-  async function ensureLabels(){
-    if (!window.isSecureContext) throw new Error('보안 컨텍스트가 아닙니다. https 또는 localhost에서 여세요.');
-    try { const t = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: 'environment' } } }); t.getTracks().forEach(x=>x.stop()); }
-    catch {
-      try { const t2 = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } }); t2.getTracks().forEach(x=>x.stop()); }
-      catch (e){ setError(e); }
-    }
-  }
-
-  async function listBackCameras(){
-    if (isIOS) return []; // iOS는 deviceId로 렌즈 분리 노출이 제한적
-    const all = (await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='videoinput');
-    const backs = all.filter(d=>/back|rear|environment/i.test(d.label));
-    const list = backs.length ? backs : all; list.sort((a,b)=>scoreForWide(b.label)-scoreForWide(a.label));
-    return list;
+  async function refreshDevices(){
+    await ensureLabels();
+    const items = (await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='videoinput');
+    items.sort((a,b)=>{ // BACK 우선 → wide 점수 → 라벨
+      const A=/back|rear|environment/i.test(a.label)?1:0; const B=/back|rear|environment/i.test(b.label)?1:0; if(A!==B) return B-A; const s=scoreForWide(b.label)-scoreForWide(a.label); if(s!==0) return s; return (a.label||'').localeCompare(b.label||''); });
+    els.sel.innerHTML='';
+    for(const d of items){ const opt=document.createElement('option'); const face=/front|user/i.test(d.label)?'FRONT':(/back|rear|environment/i.test(d.label)?'BACK':''); opt.value=d.deviceId; opt.textContent=`${d.label||'camera'}${face?' · '+face:''}`; els.sel.appendChild(opt); }
+    const saved = localStorage.getItem(storageKey); if (saved && [...els.sel.options].some(o=>o.value===saved)) els.sel.value = saved;
   }
 
   async function tryStartWithDevice(device){
-    const constraints = {
-      video: {
-        deviceId: device ? { exact: device.deviceId } : undefined,
-        facingMode: 'environment',
-        width: { ideal: 1280, max: 1920 },
-        height:{ ideal: 720,  max: 1080 },
-        frameRate: { ideal: 30, max: 60 }
-      },
-      audio: false
-    };
+    const constraints = { video: { deviceId: device ? {exact: device.deviceId} : undefined, facingMode:'environment', width:{ideal:1280,max:1920}, height:{ideal:720,max:1080}, frameRate:{ideal:30,max:60} }, audio:false };
     const stream = await navigator.mediaDevices.getUserMedia(constraints);
     const track = stream.getVideoTracks()[0];
-
-    try {
-      const caps = track.getCapabilities ? track.getCapabilities() : {};
-      if (caps.zoom && typeof caps.zoom.min === 'number'){
-        // 망원 감지: 최소 배율이 1.2보다 크면 망원에 가깝다고 판단 → 폐기 후 다음 후보
-        if (caps.zoom.min > 1.2){ track.stop(); stream.getTracks().forEach(t=>t.stop()); throw new Error('Telephoto detected (zoom.min=' + caps.zoom.min + ')'); }
-        await track.applyConstraints({ advanced: [{ zoom: Math.max(1, caps.zoom.min) }] });
-      }
-      const adv = [];
-      if (caps.focusMode && caps.focusMode.includes('continuous')) adv.push({ focusMode:'continuous' });
-      if (caps.exposureMode && caps.exposureMode.includes('continuous')) adv.push({ exposureMode:'continuous' });
-      if (adv.length) await track.applyConstraints({ advanced: adv });
-    } catch(e){ /* capability 미지원이면 무시 */ }
-
+    try{ const caps = track.getCapabilities ? track.getCapabilities() : {}; if (caps.zoom && typeof caps.zoom.min==='number'){ if (caps.zoom.min>1.2){ track.stop(); stream.getTracks().forEach(t=>t.stop()); throw new Error('Telephoto detected (zoom.min='+caps.zoom.min+')'); } await track.applyConstraints({advanced:[{zoom:Math.max(1,caps.zoom.min)}]}); } const adv=[]; if (caps.focusMode && caps.focusMode.includes('continuous')) adv.push({focusMode:'continuous'}); if (caps.exposureMode && caps.exposureMode.includes('continuous')) adv.push({exposureMode:'continuous'}); if (adv.length) await track.applyConstraints({advanced:adv}); }catch(e){ /* ignore if unsupported */ }
     return stream;
   }
 
   async function startAutoWide(){
-    els.btnStop.disabled = true; setStatus('카메라 탐색 중…'); els.err.textContent='';
+    els.btnStop.disabled=true; setStatus('카메라 탐색 중…'); els.err.textContent='';
     try{
       await ensureLabels();
-      let selected = null;
-      if (isIOS){
-        // iOS: facingMode만으로 후면 시도
-        const stream = await tryStartWithDevice(null);
-        selected = { dev: { label: 'iOS environment (auto)' }, stream };
-      } else {
-        const candidates = await listBackCameras();
-        const ordered = candidates.filter(d=>!triedDeviceIds.has(d.deviceId));
-        if (!ordered.length) { triedDeviceIds.clear(); ordered.push(...candidates); }
-        for (const dev of ordered){
-          try { const stream = await tryStartWithDevice(dev); selected = { dev, stream }; break; }
-          catch(e){ triedDeviceIds.add(dev.deviceId); }
-        }
+      let selected=null;
+      const preferredId = els.sel && els.sel.value ? els.sel.value : localStorage.getItem(storageKey);
+      if (preferredId){ try{ const stream=await tryStartWithDevice({deviceId:preferredId}); selected={dev:{deviceId:preferredId,label:'Preferred'},stream}; }catch(e){ /* next */ } }
+      if(!selected){
+        if (isIOS){ const stream=await tryStartWithDevice(null); selected={dev:{label:'iOS environment (auto)'},stream}; }
+        else { const candidates = (await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='videoinput');
+               // 후보 순서를 refreshDevices와 동일하게 재현
+               candidates.sort((a,b)=>{ const A=/back|rear|environment/i.test(a.label)?1:0; const B=/back|rear|environment/i.test(b.label)?1:0; if(A!==B) return B-A; const s=scoreForWide(b.label)-scoreForWide(a.label); if(s!==0) return s; return (a.label||'').localeCompare(b.label||''); });
+               const ordered = candidates.filter(d=>!triedDeviceIds.has(d.deviceId)); if(!ordered.length){ triedDeviceIds.clear(); ordered.push(...candidates);} for(const dev of ordered){ try{ const stream=await tryStartWithDevice(dev); selected={dev,stream}; break; }catch(e){ triedDeviceIds.add(dev.deviceId);} } }
       }
       if(!selected) throw new Error('사용 가능한 카메라를 시작할 수 없습니다. (권한/https/인앱 여부 확인)');
-      stopCurrent(); currentStream = selected.stream; els.video.srcObject = currentStream;
-      try { await els.video.play(); } catch { /* iOS 자동재생 제한 */ }
-      els.btnStop.disabled = false; els.chosen.textContent = selected.dev.label || selected.dev.deviceId || '-'; setStatus('실행 중');
-    }catch(e){ setError(e); setStatus(e && e.message ? e.message : '오류 발생'); }
+      stopCurrent(); currentStream=selected.stream; els.video.srcObject=currentStream; try{ await els.video.play(); }catch{}
+      els.btnStop.disabled=false; els.chosen.textContent=selected.dev.label || selected.dev.deviceId || '-'; setStatus('실행 중'); if (els.sel && els.sel.value) localStorage.setItem(storageKey, els.sel.value);
+    }catch(e){ setError(e); setStatus(e&&e.message?e.message:'오류 발생'); }
   }
 
-  // ====== bind buttons
   els.btnStart.addEventListener('click', startAutoWide);
   els.btnStop.addEventListener('click', ()=>{ stopCurrent(); setStatus('정지됨'); });
   els.btnSwitch.addEventListener('click', startAutoWide);
+  els.btnRefresh.addEventListener('click', refreshDevices);
+  els.sel.addEventListener('change', ()=>{ localStorage.setItem(storageKey, els.sel.value); startAutoWide(); });
 
-  // auto attempt (일부 환경에선 사용자 제스처 필요)
-  if (window.isSecureContext) {
-    // 자동 시도는 사용자가 원치 않을 때를 대비해 약간의 지연
-    setTimeout(()=>{ startAutoWide(); }, 200);
-  }
-
+  if (window.isSecureContext){ setTimeout(async()=>{ await refreshDevices(); startAutoWide(); }, 200); }
+  else { setTimeout(()=>{ refreshDevices(); }, 200); }
   addEventListener('visibilitychange', ()=>{ if (document.hidden) stopCurrent(); });
   addEventListener('pagehide', ()=> stopCurrent());
 })();
