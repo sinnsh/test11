@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-  <title>모바일 웹 · 광각(일반) 후면 카메라 자동 실행</title>
+  <title>모바일 웹 · 광각(일반) 후면 카메라 자동 실행 (Clean Build)</title>
   <style>
     :root { --bg:#0b1220; --fg:#e6edf3; --muted:#8b98ab; --card:#111a2b; --accent:#3ea6ff; }
     html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui, -apple-system, Segoe UI, Roboto, Noto Sans KR, Apple SD Gothic Neo, sans-serif}
@@ -17,28 +17,19 @@
     button{background:var(--accent);color:#061220;border:none;border-radius:12px;padding:10px 14px;font-weight:700;cursor:pointer}
     button[disabled]{opacity:.45;cursor:not-allowed}
     .mono{font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace}
+    .small{font-size:12px;color:var(--muted)}
   </style>
 </head>
 <body>
   <div class="wrap">
     <header>
-      <h1>광각(일반) 후면 카메라 자동 실행2</h1>
+      <h1>광각(일반) 후면 카메라 자동 실행 (Clean)</h1>
       <div class="row">
-        <button id="btnStart" hidden>카메라 시작</button>
-        <button id="btnSwitch" title="다른 카메라 재시도">다른 카메라 시도</button>
+        <button id="btnStart">카메라 시작</button>
+        <button id="btnSwitch">다른 카메라 시도</button>
         <button id="btnStop" disabled>정지</button>
       </div>
     </header>
-
-    <div class="card" id="diag" style="margin-top:12px;display:none">
-      <div style="font-weight:700;margin-bottom:6px">진단</div>
-      <div class="meta">
-        <div>보안 컨텍스트: <span id="secctx">-</span></div>
-        <div>브라우저: <span id="ua">-</span></div>
-        <div>권한: <span id="perm">-</span></div>
-        <div>오류: <span id="err">-</span></div>
-      </div>
-    </div>
 
     <div class="card" style="margin-top:12px">
       <video id="preview" playsinline autoplay muted></video>
@@ -49,305 +40,147 @@
     </div>
 
     <div class="card" style="margin-top:12px">
-      <div style="font-weight:700;margin-bottom:6px">참고</div>
-      <ul style="margin:6px 0 0 18px;color:var(--muted)">
-        <li>일부 iOS/Safari는 자동 재생을 막을 수 있어, 상단의 <b>카메라 시작</b> 버튼이 나타나면 눌러 주세요.</li>
-        <li>자동 선택이 예상과 다르면 <b>다른 카메라 시도</b>로 순차 재시도합니다.</li>
-      </ul>
+      <div style="font-weight:700;margin-bottom:6px">진단</div>
+      <div class="meta">
+        <div>보안 컨텍스트: <span id="secctx">-</span></div>
+        <div>브라우저: <span id="ua">-</span></div>
+        <div>권한: <span id="perm">-</span></div>
+        <div>오류: <span id="err">-</span></div>
+      </div>
+      <div class="small" style="margin-top:6px">HTTPS 또는 localhost에서 여세요. 인앱 브라우저는 제한될 수 있습니다.</div>
     </div>
   </div>
 
 <script>
-const $ = (sel)=>document.querySelector(sel);
-const els = { video: $('#preview'), status: $('#status'), chosen: $('#chosen'),
-              btnStart: $('#btnStart'), btnStop: $('#btnStop'), btnSwitch: $('#btnSwitch') };
+(function(){
+  'use strict';
 
-let currentStream = null;
-let triedDeviceIds = new Set();
-
-function logStatus(text){ els.status.textContent = text; }
-
-function scoreForWide(label){
-  const L = (label||'').toLowerCase();
-  let s = 0;
-  if (/(back|rear|environment|main|standard|wide|1x)/.test(L)) s += 3;
-  if (/\b(wide|standard|main)\b/.test(L)) s += 4;
-  if (/(tele|zoom|3x|5x|10x)/.test(L)) s -= 6;
-  if (/(ultra[-\s]?wide|0\.5x|ultra)/.test(L)) s -= 4;
-  if (/macro/.test(L)) s -= 4;
-  if (/back.*wide/.test(L)) s += 2;
-  return s;
-}
-
-async function ensureLabels(){
-  // iOS는 권한 전엔 라벨이 비어있음 → 라벨 공개를 위해 한 번 열었다가 닫음
-  try{
-    const t1 = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: 'environment' } } });
-    t1.getTracks().forEach(t=>t.stop());
-  }catch{
-    try{
-      const t2 = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-      t2.getTracks().forEach(t=>t.stop());
-    }catch{}
-  }
-}
-
-async function listBackCameras(){
+  // ====== helpers
+  const $ = (sel)=>document.querySelector(sel);
+  const els = {
+    video: $('#preview'), status: $('#status'), chosen: $('#chosen'),
+    btnStart: $('#btnStart'), btnStop: $('#btnStop'), btnSwitch: $('#btnSwitch'),
+    sec: $('#secctx'), ua: $('#ua'), perm: $('#perm'), err: $('#err')
+  };
   const ua = navigator.userAgent || '';
-  const isIOS = /iP(hone|ad|od)|Mac OS X/.test(ua) && /Safari/.test(ua) && !/Chrome|CriOS|FxiOS/.test(ua);
-  // iOS는 렌즈가 개별 deviceId로 잘 안 노출되므로 enumerateDevices를 쓰지 않고 facingMode 위주로 처리
-  if (isIOS) return [];
-  const all = (await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='videoinput');
-  const backs = all.filter(d=>/back|rear|environment/i.test(d.label));
-  const list = backs.length ? backs : all;
-  list.sort((a,b)=>scoreForWide(b.label)-scoreForWide(a.label));
-  return list;
-}
+  const isIOS = /iP(hone|ad|od)/.test(ua) && /Safari/.test(ua) && !/CriOS|FxiOS/.test(ua);
 
-function stopCurrent(){
-  if(currentStream){
-    currentStream.getTracks().forEach(t=>t.stop());
-    currentStream = null;
+  function setStatus(t){ els.status.textContent = t; }
+  function setError(e){ if(!e) return; const msg = [e.name, e.message].filter(Boolean).join(': '); els.err.textContent = msg; console.error(e); }
+
+  // show diagnostics
+  els.sec.textContent = (window.isSecureContext ? 'SECURE (https/localhost)' : 'NOT SECURE');
+  els.ua.textContent = ua;
+  (async()=>{
+    try { const p = await (navigator.permissions && navigator.permissions.query ? navigator.permissions.query({name:'camera'}) : null); els.perm.textContent = p ? p.state : 'unknown'; }
+    catch { els.perm.textContent = 'unknown'; }
+  })();
+
+  let currentStream = null; let triedDeviceIds = new Set();
+
+  function stopCurrent(){
+    if(currentStream){ currentStream.getTracks().forEach(t=>t.stop()); currentStream = null; }
+    els.video.srcObject = null; els.btnStop.disabled = true;
   }
-  els.video.srcObject = null;
-  els.btnStop.disabled = true;
-}
 
-async function tryStartWithDevice(device){
-  const constraints = {
-    video: {
-      deviceId: device ? { exact: device.deviceId } : undefined,
-      facingMode: 'environment',
-      width: { ideal: 1280, max: 1920 },
-      height:{ ideal: 720,  max: 1080 },
-      frameRate: { ideal: 30, max: 60 }
-    },
-    audio: false
-  };
-  const stream = await navigator.mediaDevices.getUserMedia(constraints);
-  const [track] = stream.getVideoTracks();
+  function scoreForWide(label){
+    const L = (label||'').toLowerCase();
+    let s = 0;
+    if (/(back|rear|environment|main|standard|wide|1x)/.test(L)) s += 3;
+    if (/\b(wide|standard|main)\b/.test(L)) s += 4;
+    if (/(tele|zoom|3x|5x|10x)/.test(L)) s -= 6;
+    if (/(ultra[-\s]?wide|0\.5x|ultra)/.test(L)) s -= 4;
+    if (/macro/.test(L)) s -= 4;
+    if (/back.*wide/.test(L)) s += 2;
+    return s;
+  }
 
-  // 렌즈 판별: zoom.min 이 1보다 크면 망원일 가능성↑ → 거부해서 다른 후보 시도
-  try{
-    const caps = track.getCapabilities?.() || {};
-    if (caps.zoom && typeof caps.zoom.min === 'number'){
-      if (caps.zoom.min > 1.2){ // 1.2 이상이면 망원 계열로 간주
-        track.stop();
-        stream.getTracks().forEach(t=>t.stop());
-        throw new Error('Telephoto detected (zoom.min=' + caps.zoom.min + ')');
+  async function ensureLabels(){
+    if (!window.isSecureContext) throw new Error('보안 컨텍스트가 아닙니다. https 또는 localhost에서 여세요.');
+    try { const t = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: 'environment' } } }); t.getTracks().forEach(x=>x.stop()); }
+    catch {
+      try { const t2 = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } }); t2.getTracks().forEach(x=>x.stop()); }
+      catch (e){ setError(e); }
+    }
+  }
+
+  async function listBackCameras(){
+    if (isIOS) return []; // iOS는 deviceId로 렌즈 분리 노출이 제한적
+    const all = (await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='videoinput');
+    const backs = all.filter(d=>/back|rear|environment/i.test(d.label));
+    const list = backs.length ? backs : all; list.sort((a,b)=>scoreForWide(b.label)-scoreForWide(a.label));
+    return list;
+  }
+
+  async function tryStartWithDevice(device){
+    const constraints = {
+      video: {
+        deviceId: device ? { exact: device.deviceId } : undefined,
+        facingMode: 'environment',
+        width: { ideal: 1280, max: 1920 },
+        height:{ ideal: 720,  max: 1080 },
+        frameRate: { ideal: 30, max: 60 }
+      },
+      audio: false
+    };
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    const track = stream.getVideoTracks()[0];
+
+    try {
+      const caps = track.getCapabilities ? track.getCapabilities() : {};
+      if (caps.zoom && typeof caps.zoom.min === 'number'){
+        // 망원 감지: 최소 배율이 1.2보다 크면 망원에 가깝다고 판단 → 폐기 후 다음 후보
+        if (caps.zoom.min > 1.2){ track.stop(); stream.getTracks().forEach(t=>t.stop()); throw new Error('Telephoto detected (zoom.min=' + caps.zoom.min + ')'); }
+        await track.applyConstraints({ advanced: [{ zoom: Math.max(1, caps.zoom.min) }] });
       }
-      // 광각 고정: 가장 낮은 zoom으로
-      await track.applyConstraints({ advanced: [{ zoom: Math.max(1, caps.zoom.min) }] });
-    }
-  }catch{ /* 미지원 무시 */ }
+      const adv = [];
+      if (caps.focusMode && caps.focusMode.includes('continuous')) adv.push({ focusMode:'continuous' });
+      if (caps.exposureMode && caps.exposureMode.includes('continuous')) adv.push({ exposureMode:'continuous' });
+      if (adv.length) await track.applyConstraints({ advanced: adv });
+    } catch(e){ /* capability 미지원이면 무시 */ }
 
-  // AF/AE 연속 모드 선호(지원 시)
-  try{
-    const caps = track.getCapabilities?.() || {};
-    const adv = [];
-    if (caps.focusMode && caps.focusMode.includes('continuous')) adv.push({ focusMode:'continuous' });
-    if (caps.exposureMode && caps.exposureMode.includes('continuous')) adv.push({ exposureMode:'continuous' });
-    if (adv.length) await track.applyConstraints({ advanced: adv });
-  }catch{}
+    return stream;
+  }
 
-  return stream;
-},
-      facingMode: 'environment',
-      width: { ideal: 1280, max: 1920 },
-      height:{ ideal: 720,  max: 1080 },
-      frameRate: { ideal: 30, max: 60 }
-    },
-    audio: false
-  };
-  const stream = await navigator.mediaDevices.getUserMedia(constraints);
-  const [track] = stream.getVideoTracks();
-  // 망원 방지용: zoom=1 시도(미지원이면 무시)
-  try{
-    const caps = track.getCapabilities?.() || {};
-    if (caps.zoom && typeof caps.zoom.min === 'number') {
-      await track.applyConstraints({ advanced: [{ zoom: 1 }] });
-    }
-  }catch{}
-
-  // AF/AE 연속 모드 선호(지원 시)
-  try{
-    const caps = track.getCapabilities?.() || {};
-    const adv = [];
-    if (caps.focusMode && caps.focusMode.includes('continuous')) adv.push({ focusMode:'continuous' });
-    if (caps.exposureMode && caps.exposureMode.includes('continuous')) adv.push({ exposureMode:'continuous' });
-    if (adv.length) await track.applyConstraints({ advanced: adv });
-  }catch{}
-
-  return stream;
-}
-
-async function startAutoWide(){
-  els.btnStop.disabled = true;
-  els.btnStart.hidden = true;
-  logStatus('카메라 탐색 중…');
-  try{
-    await ensureLabels();
-    const ua = navigator.userAgent || '';
-    const isIOS = /iP(hone|ad|od)|Mac OS X/.test(ua) && /Safari/.test(ua) && !/Chrome|CriOS|FxiOS/.test(ua);
-
-    let selected = null;
-
-    if (isIOS) {
-      // iOS: deviceId 사용하지 않고 후면(environemnt)만 강제 시도
-      try{
+  async function startAutoWide(){
+    els.btnStop.disabled = true; setStatus('카메라 탐색 중…'); els.err.textContent='';
+    try{
+      await ensureLabels();
+      let selected = null;
+      if (isIOS){
+        // iOS: facingMode만으로 후면 시도
         const stream = await tryStartWithDevice(null);
         selected = { dev: { label: 'iOS environment (auto)' }, stream };
-      }catch(e){ throw e; }
-    } else {
-      const candidates = await listBackCameras();
-      const ordered = candidates.filter(d=>!triedDeviceIds.has(d.deviceId));
-      if (!ordered.length) { triedDeviceIds.clear(); ordered.push(...candidates); }
-
-      for (const dev of ordered){
-        try{
-          const stream = await tryStartWithDevice(dev);
-          selected = { dev, stream };
-          break;
-        }catch(e){
-          triedDeviceIds.add(dev.deviceId);
-          // 망원으로 판별되면 다음 후보
-          continue;
+      } else {
+        const candidates = await listBackCameras();
+        const ordered = candidates.filter(d=>!triedDeviceIds.has(d.deviceId));
+        if (!ordered.length) { triedDeviceIds.clear(); ordered.push(...candidates); }
+        for (const dev of ordered){
+          try { const stream = await tryStartWithDevice(dev); selected = { dev, stream }; break; }
+          catch(e){ triedDeviceIds.add(dev.deviceId); }
         }
       }
-    }
-
-    if(!selected) throw new Error('사용 가능한 카메라를 시작할 수 없습니다. (권한/https/인앱 브라우저 여부 확인)');
-
-    stopCurrent();
-    currentStream = selected.stream;
-    els.video.srcObject = currentStream;
-    try{ await els.video.play(); }catch(e){ els.btnStart.hidden = false; }
-
-    els.btnStop.disabled = false;
-    els.chosen.textContent = selected.dev.label || selected.dev.deviceId || '-';
-    logStatus('실행 중');
-  }catch(err){
-    logStatus(err.message || '오류 발생');
-    els.btnStart.hidden = false;
+      if(!selected) throw new Error('사용 가능한 카메라를 시작할 수 없습니다. (권한/https/인앱 여부 확인)');
+      stopCurrent(); currentStream = selected.stream; els.video.srcObject = currentStream;
+      try { await els.video.play(); } catch { /* iOS 자동재생 제한 */ }
+      els.btnStop.disabled = false; els.chosen.textContent = selected.dev.label || selected.dev.deviceId || '-'; setStatus('실행 중');
+    }catch(e){ setError(e); setStatus(e && e.message ? e.message : '오류 발생'); }
   }
-}
 
-    let selected = null;
-    for (const dev of ordered){
-      try{
-        const stream = await tryStartWithDevice(dev);
-        selected = { dev, stream };
-        break;
-      }catch(e){
-        triedDeviceIds.add(dev.deviceId);
-        continue;
-      }
-    }
+  // ====== bind buttons
+  els.btnStart.addEventListener('click', startAutoWide);
+  els.btnStop.addEventListener('click', ()=>{ stopCurrent(); setStatus('정지됨'); });
+  els.btnSwitch.addEventListener('click', startAutoWide);
 
-    if(!selected) throw new Error('사용 가능한 카메라를 시작할 수 없습니다.');
-
-    stopCurrent();
-    currentStream = selected.stream;
-    els.video.srcObject = currentStream;
-
-    // iOS 자동재생 보조: play 시도, 실패 시 시작 버튼 노출
-    try{ await els.video.play(); }catch{
-      els.btnStart.hidden = false;
-    }
-
-    els.btnStop.disabled = false;
-    els.chosen.textContent = selected.dev.label || selected.dev.deviceId;
-    logStatus('실행 중');
-  }catch(err){
-    console.error(err);
-    logStatus(err.message || '오류 발생');
-    // 사용자 제스처 요구 환경 대비 시작 버튼 제공
-    els.btnStart.hidden = false;
+  // auto attempt (일부 환경에선 사용자 제스처 필요)
+  if (window.isSecureContext) {
+    // 자동 시도는 사용자가 원치 않을 때를 대비해 약간의 지연
+    setTimeout(()=>{ startAutoWide(); }, 200);
   }
-}
 
-// 이벤트 바인딩
-els.btnStart.addEventListener('click', async ()=>{
-  await startAutoWide();
-});
-
-els.btnStop.addEventListener('click', ()=>{
-  stopCurrent();
-  logStatus('정지됨');
-});
-
-els.btnSwitch.addEventListener('click', async ()=>{
-  // 다음 후보로 재시도
-  if (currentStream) stopCurrent();
-  await startAutoWide();
-});
-
-// 페이지 가시성/이탈 시 트랙 정리
-addEventListener('visibilitychange', ()=>{ if (document.hidden) stopCurrent(); });
-addEventListener('pagehide', ()=> stopCurrent());
-
-// 가능한 경우 자동 시도(일부 환경은 사용자 제스처 필요)
-startAutoWide();
+  addEventListener('visibilitychange', ()=>{ if (document.hidden) stopCurrent(); });
+  addEventListener('pagehide', ()=> stopCurrent());
+})();
 </script>
-  <script>
-    // === 추가 진단/오류 표시 & 안전성 강화 ===
-    (function(){
-      const diag = {
-        wrap: document.getElementById('diag'),
-        sec:  document.getElementById('secctx'),
-        ua:   document.getElementById('ua'),
-        perm: document.getElementById('perm'),
-        err:  document.getElementById('err')
-      };
-      if (diag.wrap) {
-        diag.wrap.style.display = 'block';
-        diag.sec.textContent = (window.isSecureContext ? 'SECURE (https/localhost)' : 'NOT SECURE');
-        diag.ua.textContent = navigator.userAgent;
-        (async()=>{
-          try{
-            const p = await navigator.permissions?.query?.({ name: 'camera' });
-            diag.perm.textContent = p ? p.state : 'unknown';
-          }catch{ diag.perm.textContent = 'unknown'; }
-        })();
-      }
-
-      function logError(e){
-        if(!e) return;
-        const msg = [e.name, e.message].filter(Boolean).join(': ');
-        if (diag.err) diag.err.textContent = msg;
-        console.error(e);
-      }
-
-      // 기존 함수들을 보강 버전으로 재정의
-      const _ensureLabels = window.ensureLabels;
-      window.ensureLabels = async function(){
-        if (!window.isSecureContext) {
-          throw new Error('이 페이지는 보안 컨텍스트가 아닙니다. https 또는 localhost에서 열어 주세요. (content://, file://, http:// 는 안됨)');
-        }
-        try{
-          const t1 = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: 'environment' } } });
-          t1.getTracks().forEach(t=>t.stop());
-        }catch(e){
-          try{
-            const t2 = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-            t2.getTracks().forEach(t=>t.stop());
-          }catch(err){ logError(err); }
-        }
-      };
-
-      const _startAutoWide = window.startAutoWide;
-      window.startAutoWide = async function(){
-        try{
-          await _startAutoWide();
-        }catch(e){
-          logError(e);
-          // 상태 문구를 조금 더 구체적으로
-          const st = document.getElementById('status');
-          if (st) st.textContent = (e && e.message) ? e.message : '오류 발생';
-        }
-      };
-
-    })();
-  </script>
 </body>
 </html>
