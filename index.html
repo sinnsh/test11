@@ -93,11 +93,13 @@ async function ensureLabels(){
 }
 
 async function listBackCameras(){
+  const ua = navigator.userAgent || '';
+  const isIOS = /iP(hone|ad|od)|Mac OS X/.test(ua) && /Safari/.test(ua) && !/Chrome|CriOS|FxiOS/.test(ua);
+  // iOS는 렌즈가 개별 deviceId로 잘 안 노출되므로 enumerateDevices를 쓰지 않고 facingMode 위주로 처리
+  if (isIOS) return [];
   const all = (await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='videoinput');
-  // 후면 추정 우선
   const backs = all.filter(d=>/back|rear|environment/i.test(d.label));
   const list = backs.length ? backs : all;
-  // 스코어 정렬(광각>표준>기타)
   list.sort((a,b)=>scoreForWide(b.label)-scoreForWide(a.label));
   return list;
 }
@@ -114,7 +116,42 @@ function stopCurrent(){
 async function tryStartWithDevice(device){
   const constraints = {
     video: {
-      deviceId: { exact: device.deviceId },
+      deviceId: device ? { exact: device.deviceId } : undefined,
+      facingMode: 'environment',
+      width: { ideal: 1280, max: 1920 },
+      height:{ ideal: 720,  max: 1080 },
+      frameRate: { ideal: 30, max: 60 }
+    },
+    audio: false
+  };
+  const stream = await navigator.mediaDevices.getUserMedia(constraints);
+  const [track] = stream.getVideoTracks();
+
+  // 렌즈 판별: zoom.min 이 1보다 크면 망원일 가능성↑ → 거부해서 다른 후보 시도
+  try{
+    const caps = track.getCapabilities?.() || {};
+    if (caps.zoom && typeof caps.zoom.min === 'number'){
+      if (caps.zoom.min > 1.2){ // 1.2 이상이면 망원 계열로 간주
+        track.stop();
+        stream.getTracks().forEach(t=>t.stop());
+        throw new Error('Telephoto detected (zoom.min=' + caps.zoom.min + ')');
+      }
+      // 광각 고정: 가장 낮은 zoom으로
+      await track.applyConstraints({ advanced: [{ zoom: Math.max(1, caps.zoom.min) }] });
+    }
+  }catch{ /* 미지원 무시 */ }
+
+  // AF/AE 연속 모드 선호(지원 시)
+  try{
+    const caps = track.getCapabilities?.() || {};
+    const adv = [];
+    if (caps.focusMode && caps.focusMode.includes('continuous')) adv.push({ focusMode:'continuous' });
+    if (caps.exposureMode && caps.exposureMode.includes('continuous')) adv.push({ exposureMode:'continuous' });
+    if (adv.length) await track.applyConstraints({ advanced: adv });
+  }catch{}
+
+  return stream;
+},
       facingMode: 'environment',
       width: { ideal: 1280, max: 1920 },
       height:{ ideal: 720,  max: 1080 },
@@ -150,11 +187,50 @@ async function startAutoWide(){
   logStatus('카메라 탐색 중…');
   try{
     await ensureLabels();
-    const candidates = await listBackCameras();
+    const ua = navigator.userAgent || '';
+    const isIOS = /iP(hone|ad|od)|Mac OS X/.test(ua) && /Safari/.test(ua) && !/Chrome|CriOS|FxiOS/.test(ua);
 
-    // 이미 시도한 deviceId 제외 후 순차 시도
-    const ordered = candidates.filter(d=>!triedDeviceIds.has(d.deviceId));
-    if (!ordered.length) { triedDeviceIds.clear(); ordered.push(...candidates); }
+    let selected = null;
+
+    if (isIOS) {
+      // iOS: deviceId 사용하지 않고 후면(environemnt)만 강제 시도
+      try{
+        const stream = await tryStartWithDevice(null);
+        selected = { dev: { label: 'iOS environment (auto)' }, stream };
+      }catch(e){ throw e; }
+    } else {
+      const candidates = await listBackCameras();
+      const ordered = candidates.filter(d=>!triedDeviceIds.has(d.deviceId));
+      if (!ordered.length) { triedDeviceIds.clear(); ordered.push(...candidates); }
+
+      for (const dev of ordered){
+        try{
+          const stream = await tryStartWithDevice(dev);
+          selected = { dev, stream };
+          break;
+        }catch(e){
+          triedDeviceIds.add(dev.deviceId);
+          // 망원으로 판별되면 다음 후보
+          continue;
+        }
+      }
+    }
+
+    if(!selected) throw new Error('사용 가능한 카메라를 시작할 수 없습니다. (권한/https/인앱 브라우저 여부 확인)');
+
+    stopCurrent();
+    currentStream = selected.stream;
+    els.video.srcObject = currentStream;
+    try{ await els.video.play(); }catch(e){ els.btnStart.hidden = false; }
+
+    els.btnStop.disabled = false;
+    els.chosen.textContent = selected.dev.label || selected.dev.deviceId || '-';
+    logStatus('실행 중');
+  }catch(err){
+    logStatus(err.message || '오류 발생');
+    els.btnStart.hidden = false;
+  }
+}
 
     let selected = null;
     for (const dev of ordered){
