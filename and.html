@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>카메라 + QR 스캐너 (And)</title>
+  <style>
+    body{margin:0;padding:1em;background:#0b1220;color:#e6edf3;font-family:sans-serif}
+    .row{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px}
+    video{width:100%;max-height:70vh;background:#000;border-radius:8px}
+    select,button{padding:8px 12px;border:none;border-radius:8px}
+    button{background:#3ea6ff;color:#061220;font-weight:bold;cursor:pointer}
+    button[disabled]{opacity:.4}
+    .mono{font-family:monospace}
+  </style>
+</head>
+<body>
+  <h3>카메라 + QR 스캐너</h3>
+  <div class="row">
+    <select id="cameraSelect"></select>
+    <button id="btnRefresh">목록 새로고침</button>
+    <button id="btnStart">카메라 시작</button>
+    <button id="btnStop" disabled>정지</button>
+    <button id="btnToggleScan">스캔 일시정지</button>
+  </div>
+  <video id="preview" playsinline autoplay muted></video>
+  <p>상태: <span id="status">-</span></p>
+  <p>선택 카메라: <span id="chosen" class="mono">-</span></p>
+  <p>QR 결과: <span id="qrResult" class="mono">-</span></p>
+
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<script>
+(async ()=>{
+  const els={
+    sel:document.getElementById('cameraSelect'),
+    btnRefresh:document.getElementById('btnRefresh'),
+    btnStart:document.getElementById('btnStart'),
+    btnStop:document.getElementById('btnStop'),
+    btnToggleScan:document.getElementById('btnToggleScan'),
+    video:document.getElementById('preview'),
+    status:document.getElementById('status'),
+    chosen:document.getElementById('chosen'),
+    qrResult:document.getElementById('qrResult')
+  };
+  let currentStream=null, scanning=false, rafId=0;
+  const off=document.createElement('canvas'), ctx=off.getContext('2d');
+
+  function setStatus(t){els.status.textContent=t;}
+  function stopCamera(){
+    if(currentStream){currentStream.getTracks().forEach(t=>t.stop());}
+    currentStream=null; els.video.srcObject=null; els.btnStop.disabled=true;
+    stopScan();
+  }
+  async function refreshList(){
+    const devices=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='videoinput');
+    els.sel.innerHTML='';
+    devices.forEach(d=>{
+      const o=document.createElement('option');o.value=d.deviceId;o.textContent=d.label||'camera';els.sel.appendChild(o);
+    });
+  }
+  async function startCamera(){
+    stopCamera();
+    try{
+      const id=els.sel.value;
+      const stream=await navigator.mediaDevices.getUserMedia({video:{deviceId:id?{exact:id}:undefined,facingMode:'environment'},audio:false});
+      currentStream=stream; els.video.srcObject=stream; await els.video.play();
+      els.btnStop.disabled=false; els.chosen.textContent=els.sel.options[els.sel.selectedIndex].text;
+      setStatus('실행 중'); startScan();
+    }catch(e){setStatus('실패:'+e.message);}
+  }
+  function startScan(){
+    scanning=true; els.qrResult.textContent='-';
+    const loop=()=>{
+      if(!scanning||!currentStream) return;
+      const w=els.video.videoWidth,h=els.video.videoHeight;
+      if(w&&h){
+        off.width=w;off.height=h;ctx.drawImage(els.video,0,0,w,h);
+        const img=ctx.getImageData(0,0,w,h);
+        const code=jsQR(img.data,img.width,img.height);
+        if(code){ els.qrResult.textContent=code.data; if(navigator.vibrate) navigator.vibrate(50); }
+      }
+      rafId=requestAnimationFrame(loop);
+    };
+    loop();
+  }
+  function stopScan(){scanning=false;if(rafId)cancelAnimationFrame(rafId);}
+
+  els.btnRefresh.onclick=refreshList;
+  els.btnStart.onclick=startCamera;
+  els.btnStop.onclick=()=>{stopCamera();setStatus('정지');};
+  els.btnToggleScan.onclick=()=>{ if(scanning){stopScan();els.btnToggleScan.textContent='스캔 재개';} else {startScan();els.btnToggleScan.textContent='스캔 일시정지';} };
+
+  if(window.isSecureContext) await refreshList();
+})();
+</script>
+</body>
+</html>
