@@ -3,95 +3,191 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-  <title>카메라 + QR 스캐너</title>
+  <title>카메라 + QR (iOS 줌 컨트롤 포함)</title>
   <style>
-    body{margin:0;padding:1em;background:#0b1220;color:#e6edf3;font-family:sans-serif}
-    .row{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px}
-    video{width:100%;max-height:70vh;background:#000;border-radius:8px}
-    select,button{padding:8px 12px;border:none;border-radius:8px}
-    button{background:#3ea6ff;color:#061220;font-weight:bold;cursor:pointer}
-    button[disabled]{opacity:.4}
-    .mono{font-family:monospace}
+    :root { --bg:#0b1220; --fg:#e6edf3; --muted:#8b98ab; --card:#111a2b; --accent:#3ea6ff; }
+    body{margin:0;padding:16px;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Noto Sans KR,Apple SD Gothic Neo,sans-serif}
+    .row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+    .card{background:var(--card);border-radius:14px;padding:12px;margin-top:12px}
+    select,button{border:none;border-radius:12px;padding:10px 12px}
+    button{background:var(--accent);color:#061220;font-weight:700;cursor:pointer}
+    button[disabled]{opacity:.45;cursor:not-allowed}
+    video{width:100%;max-height:70vh;background:#000;border-radius:12px}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    .muted{color:var(--muted)}
+    .chips{display:flex;gap:8px;flex-wrap:wrap}
+    .chip{background:#24324e;color:var(--fg);border-radius:999px;padding:6px 10px;cursor:pointer;border:1px solid #2e436a}
+    .chip.active{background:#3ea6ff;color:#061220;border-color:#3ea6ff}
+    .hidden{display:none}
   </style>
 </head>
 <body>
-  <h3>카메라 + QR 스캐너</h3>
+  <h2>카메라 + QR (iOS 줌 컨트롤 포함)</h2>
   <div class="row">
-    <select id="cameraSelect"></select>
-    <button id="btnRefresh">목록 새로고침</button>
     <button id="btnStart">카메라 시작</button>
     <button id="btnStop" disabled>정지</button>
     <button id="btnToggleScan">스캔 일시정지</button>
   </div>
-  <video id="preview" playsinline autoplay muted></video>
-  <p>상태: <span id="status">-</span></p>
-  <p>선택 카메라: <span id="chosen" class="mono">-</span></p>
-  <p>QR 결과: <span id="qrResult" class="mono">-</span></p>
 
-<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
-<script>
-(async ()=>{
-  const els={
-    sel:document.getElementById('cameraSelect'),
-    btnRefresh:document.getElementById('btnRefresh'),
-    btnStart:document.getElementById('btnStart'),
-    btnStop:document.getElementById('btnStop'),
-    btnToggleScan:document.getElementById('btnToggleScan'),
-    video:document.getElementById('preview'),
-    status:document.getElementById('status'),
-    chosen:document.getElementById('chosen'),
-    qrResult:document.getElementById('qrResult')
-  };
-  let currentStream=null, scanning=false, rafId=0;
-  const off=document.createElement('canvas'), ctx=off.getContext('2d');
+  <div id="iosBox" class="card hidden">
+    <div style="font-weight:700;margin-bottom:6px">iOS 전용 제어</div>
+    <div class="muted" style="margin-bottom:8px">iOS Safari/웹뷰에서는 렌즈 전환이 불가합니다. 대신 1x 기준으로 줌을 조절합니다.</div>
+    <div class="chips">
+      <div class="chip" data-zoom="1.0">1.0x</div>
+      <div class="chip" data-zoom="1.2">1.2x</div>
+      <div class="chip" data-zoom="1.5">1.5x</div>
+    </div>
+    <div class="muted" id="zoomInfo" style="margin-top:6px">줌: -</div>
+  </div>
 
-  function setStatus(t){els.status.textContent=t;}
-  function stopCamera(){
-    if(currentStream){currentStream.getTracks().forEach(t=>t.stop());}
-    currentStream=null; els.video.srcObject=null; els.btnStop.disabled=true;
-    stopScan();
-  }
-  async function refreshList(){
-    const devices=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='videoinput');
-    els.sel.innerHTML='';
-    devices.forEach(d=>{
-      const o=document.createElement('option');o.value=d.deviceId;o.textContent=d.label||'camera';els.sel.appendChild(o);
-    });
-  }
-  async function startCamera(){
-    stopCamera();
-    try{
-      const id=els.sel.value;
-      const stream=await navigator.mediaDevices.getUserMedia({video:{deviceId:id?{exact:id}:undefined,facingMode:'environment'},audio:false});
-      currentStream=stream; els.video.srcObject=stream; await els.video.play();
-      els.btnStop.disabled=false; els.chosen.textContent=els.sel.options[els.sel.selectedIndex].text;
-      setStatus('실행 중'); startScan();
-    }catch(e){setStatus('실패:'+e.message);}
-  }
-  function startScan(){
-    scanning=true; els.qrResult.textContent='-';
-    const loop=()=>{
-      if(!scanning||!currentStream) return;
-      const w=els.video.videoWidth,h=els.video.videoHeight;
-      if(w&&h){
-        off.width=w;off.height=h;ctx.drawImage(els.video,0,0,w,h);
-        const img=ctx.getImageData(0,0,w,h);
-        const code=jsQR(img.data,img.width,img.height);
-        if(code){ els.qrResult.textContent=code.data; if(navigator.vibrate) navigator.vibrate(50); }
-      }
-      rafId=requestAnimationFrame(loop);
+  <div class="card">
+    <video id="video" playsinline autoplay muted></video>
+    <div style="margin-top:8px">상태: <span id="status">-</span></div>
+    <div>QR 결과: <span id="qr" class="mono">-</span></div>
+  </div>
+
+  <div class="card">
+    <div style="font-weight:700;margin-bottom:6px">진단</div>
+    <div class="muted">보안 컨텍스트: <span id="sec">-</span></div>
+    <div class="muted">브라우저: <span id="ua">-</span></div>
+    <div class="muted">오류: <span id="err">-</span></div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+  <script>
+  (function(){
+    'use strict';
+    const els = {
+      start: document.getElementById('btnStart'),
+      stop: document.getElementById('btnStop'),
+      toggle: document.getElementById('btnToggleScan'),
+      iosBox: document.getElementById('iosBox'),
+      chips: Array.from(document.querySelectorAll('.chip')),
+      zoomInfo: document.getElementById('zoomInfo'),
+      video: document.getElementById('video'),
+      status: document.getElementById('status'),
+      qr: document.getElementById('qr'),
+      sec: document.getElementById('sec'),
+      ua: document.getElementById('ua'),
+      err: document.getElementById('err')
     };
-    loop();
-  }
-  function stopScan(){scanning=false;if(rafId)cancelAnimationFrame(rafId);}
 
-  els.btnRefresh.onclick=refreshList;
-  els.btnStart.onclick=startCamera;
-  els.btnStop.onclick=()=>{stopCamera();setStatus('정지');};
-  els.btnToggleScan.onclick=()=>{ if(scanning){stopScan();els.btnToggleScan.textContent='스캔 재개';} else {startScan();els.btnToggleScan.textContent='스캔 일시정지';} };
+    const ua = navigator.userAgent || '';
+    const isIOS = /iP(hone|ad|od)/.test(ua) && /Safari/.test(ua) && !/CriOS|FxiOS/.test(ua);
+    els.sec.textContent = window.isSecureContext ? 'SECURE (https/localhost)' : 'NOT SECURE';
+    els.ua.textContent = ua;
 
-  if(window.isSecureContext) await refreshList();
-})();
-</script>
+    if (isIOS) els.iosBox.classList.remove('hidden');
+
+    let stream = null, track = null, scanning = false, raf = 0;
+    const off = document.createElement('canvas');
+    const ctx = off.getContext('2d');
+    let desiredZoom = 1.0; // iOS에서 유지하려는 줌 값
+
+    function setStatus(t){ els.status.textContent = t; }
+    function setErr(e){ if(!e) return; const msg = [e.name, e.message].filter(Boolean).join(': '); els.err.textContent = msg; console.error(e); }
+
+    function stopCamera(){
+      if (stream) stream.getTracks().forEach(t=>t.stop());
+      stream=null; track=null; els.video.srcObject=null; els.stop.disabled=true; stopScan();
+    }
+
+    async function startCamera(){
+      stopCamera(); setStatus('시작 중…'); els.err.textContent='';
+      if (!window.isSecureContext) { setStatus('https에서 열어주세요'); return; }
+      try{
+        // iOS는 deviceId 사용 불가 → facingMode 중심, 해상도는 과도하게 높지 않게
+        const constraints = { video: { facingMode: { ideal: 'environment' }, width:{ ideal:1280, max:1920 }, height:{ ideal:720, max:1080 } }, audio:false };
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+        els.video.srcObject = stream; await els.video.play();
+        track = stream.getVideoTracks()[0];
+        els.stop.disabled=false; setStatus('실행 중');
+
+        // iOS: 망원 방지 → 줌을 최저(≈1x)로 맞추고, 원하는 줌(desiredZoom)을 유지
+        try{
+          const caps = track.getCapabilities ? track.getCapabilities() : {};
+          const sets = track.getSettings ? track.getSettings() : {};
+          if (caps.zoom && typeof caps.zoom.min === 'number'){
+            const base = Math.max(1, caps.zoom.min);
+            desiredZoom = base; // 기본은 1x
+            await track.applyConstraints({ advanced: [{ zoom: desiredZoom }] });
+            updateZoomInfo(caps, sets);
+            // iOS에서 값이 밀리는 경우 주기적으로 재적용
+            if (isIOS) monitorZoom(caps);
+          }
+        }catch(e){ /* zoom 미지원 → 무시 */ }
+
+        startScan();
+      }catch(e){ setErr(e); setStatus('실패'); }
+    }
+
+    function updateZoomInfo(caps, sets){
+      const s = track && track.getSettings ? track.getSettings() : sets || {};
+      els.zoomInfo.textContent = `줌: ${s.zoom ? s.zoom.toFixed(2) : '-'} (가능범위 ${caps && caps.zoom ? caps.zoom.min+'~'+caps.zoom.max : '미지원'})`;
+    }
+
+    async function applyZoom(z){
+      if (!track) return;
+      try{
+        const caps = track.getCapabilities ? track.getCapabilities() : {};
+        if (!(caps.zoom && typeof caps.zoom.min==='number')) return;
+        const clamped = Math.min(caps.zoom.max, Math.max(caps.zoom.min, z));
+        await track.applyConstraints({ advanced: [{ zoom: clamped }] });
+        desiredZoom = clamped;
+        updateZoomInfo(caps);
+        els.chips.forEach(ch=>ch.classList.toggle('active', Number(ch.dataset.zoom)===Number(desiredZoom.toFixed(1))));
+      }catch(e){ setErr(e); }
+    }
+
+    function monitorZoom(caps){
+      // iOS에서 내부적으로 렌즈/줌이 흔들릴 때 주기적으로 재적용
+      const interval = 1200;
+      const timer = setInterval(async ()=>{
+        if (!track) { clearInterval(timer); return; }
+        try{
+          const s = track.getSettings ? track.getSettings() : {};
+          if (typeof s.zoom === 'number' && Math.abs(s.zoom - desiredZoom) > 0.12){
+            await track.applyConstraints({ advanced: [{ zoom: desiredZoom }] });
+          }
+          updateZoomInfo(caps, s);
+        }catch{}
+      }, interval);
+    }
+
+    function startScan(){
+      if (!stream) return;
+      scanning = true;
+      const loop = ()=>{
+        if (!scanning || !stream) return;
+        const w = els.video.videoWidth|0, h = els.video.videoHeight|0;
+        if (w && h){
+          off.width=w; off.height=h; ctx.drawImage(els.video,0,0,w,h);
+          const img = ctx.getImageData(0,0,w,h);
+          try{
+            const code = jsQR(img.data, img.width, img.height, { inversionAttempts:'dontInvert' });
+            if (code && code.data){ els.qr.textContent = code.data; if (navigator.vibrate) navigator.vibrate(50); }
+          }catch(e){ setErr(e); }
+        }
+        raf = requestAnimationFrame(loop);
+      };
+      loop();
+    }
+    function stopScan(){ scanning=false; if (raf) cancelAnimationFrame(raf); }
+
+    // UI 바인딩
+    els.start.addEventListener('click', startCamera);
+    els.stop.addEventListener('click', ()=>{ stopCamera(); setStatus('정지'); });
+    els.toggle.addEventListener('click', ()=>{ if (scanning){ stopScan(); els.toggle.textContent='스캔 재개'; } else { startScan(); els.toggle.textContent='스캔 일시정지'; } });
+    els.chips.forEach(ch=> ch.addEventListener('click', ()=> applyZoom(Number(ch.dataset.zoom))));
+
+    // 보안 컨텍스트면 자동 준비
+    if (window.isSecureContext) {
+      // 사파리 자동재생 제약을 고려해 버튼 한 번 누르는 걸 권장
+      setStatus('준비 완료 (시작 버튼을 눌러 주세요)');
+    } else {
+      setStatus('HTTPS에서만 동작합니다');
+    }
+  })();
+  </script>
 </body>
 </html>
