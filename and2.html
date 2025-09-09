@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>카메라 + QR 스캐너(And, Zoom/Torch)</title>
+  <style>
+    body{margin:0;padding:1em;background:#0b1220;color:#e6edf3;font-family:sans-serif}
+    .row{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px}
+    video{width:100%;max-height:70vh;background:#000;border-radius:8px;touch-action:none}
+    select,button,input[type=range]{padding:8px 12px;border:none;border-radius:8px}
+    button{background:#3ea6ff;color:#061220;font-weight:bold;cursor:pointer}
+    button[disabled]{opacity:.4}
+    .mono{font-family:monospace}
+    .card{background:#111a2b;border-radius:12px;padding:10px;margin-top:10px}
+    .muted{color:#8b98ab}
+    #zoomBox{display:none;align-items:center;gap:8px;flex-wrap:wrap}
+    input[type=range]{width:200px}
+    .chip{background:#24324e;color:#e6edf3;border-radius:999px;padding:6px 10px;cursor:pointer;border:1px solid #2e436a}
+  </style>
+</head>
+<body>
+  <h3>카메라 + QR 스캐너(And)</h3>
+
+  <div class="row">
+    <select id="cameraSelect"></select>
+    <button id="btnRefresh">목록 새로고침</button>
+    <button id="btnStart">카메라 시작</button>
+    <button id="btnStop" disabled>정지</button>
+    <button id="btnToggleScan">스캔 일시정지</button>
+  </div>
+
+  <video id="preview" playsinline autoplay muted></video>
+
+  <div class="card" id="zoomCard">
+    <div class="muted" style="margin-bottom:6px">줌/토치 (단말 지원 시 활성화)</div>
+    <div id="zoomBox" class="row">
+      <button id="btnZoomMinus">−</button>
+      <input type="range" id="zoomRange" min="1" max="4" step="0.1" value="1" />
+      <button id="btnZoomPlus">＋</button>
+      <span id="zoomLabel" class="mono">1.00x</span>
+      <span class="chip" id="zoomReset">리셋(1.0x)</span>
+      <span class="muted">※ 핀치(두 손가락)로도 확대/축소 가능</span>
+    </div>
+    <div id="torchBox" class="row" style="display:none">
+      <button id="btnTorch">토치 켜기</button>
+    </div>
+  </div>
+
+  <p>상태: <span id="status">-</span></p>
+  <p>선택 카메라: <span id="chosen" class="mono">-</span></p>
+  <p>QR 결과: <span id="qrResult" class="mono">-</span></p>
+
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+  <script>
+  (async ()=>{
+    const els={
+      sel:document.getElementById('cameraSelect'),
+      btnRefresh:document.getElementById('btnRefresh'),
+      btnStart:document.getElementById('btnStart'),
+      btnStop:document.getElementById('btnStop'),
+      btnToggleScan:document.getElementById('btnToggleScan'),
+      video:document.getElementById('preview'),
+      status:document.getElementById('status'),
+      chosen:document.getElementById('chosen'),
+      qrResult:document.getElementById('qrResult'),
+      zoomBox:document.getElementById('zoomBox'),
+      zoomRange:document.getElementById('zoomRange'),
+      zoomLabel:document.getElementById('zoomLabel'),
+      zoomMinus:document.getElementById('btnZoomMinus'),
+      zoomPlus:document.getElementById('btnZoomPlus'),
+      zoomReset:document.getElementById('zoomReset'),
+      torchBox:document.getElementById('torchBox'),
+      torchBtn:document.getElementById('btnTorch')
+    };
+    let currentStream=null, track=null, scanning=false, rafId=0;
+    let caps={}, desiredZoom=1, torchOn=false;
+    const off=document.createElement('canvas'), ctx=off.getContext('2d');
+
+    function setStatus(t){els.status.textContent=t;}
+    function stopScan(){scanning=false;if(rafId)cancelAnimationFrame(rafId);}
+    function startScan(){
+      scanning=true; els.qrResult.textContent='-';
+      const loop=()=>{
+        if(!scanning||!currentStream) return;
+        const w=els.video.videoWidth,h=els.video.videoHeight;
+        if(w&&h){
+          off.width=w;off.height=h;ctx.drawImage(els.video,0,0,w,h);
+          const img=ctx.getImageData(0,0,w,h);
+          const code=jsQR(img.data,img.width,img.height,{inversionAttempts:'dontInvert'});
+          if(code){ els.qrResult.textContent=code.data; if(navigator.vibrate) navigator.vibrate(50); }
+        }
+        rafId=requestAnimationFrame(loop);
+      };
+      loop();
+    }
+    function stopCamera(){
+      if(currentStream){currentStream.getTracks().forEach(t=>t.stop());}
+      currentStream=null; track=null; els.video.srcObject=null; els.btnStop.disabled=true;
+      stopScan();
+      // UI 초기화
+      els.zoomBox.style.display='none';
+      els.torchBox.style.display='none';
+    }
+
+    async function refreshList(){
+      const devices=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='videoinput');
+      els.sel.innerHTML='';
+      devices.forEach(d=>{
+        const o=document.createElement('option'); o.value=d.deviceId; o.textContent=d.label||'camera'; els.sel.appendChild(o);
+      });
+    }
+
+    function updateZoomUI(){
+      if(!(caps.zoom && typeof caps.zoom.min==='number')){ els.zoomBox.style.display='none'; return; }
+      els.zoomBox.style.display='flex';
+      // 범위/스텝 세팅
+      const min=Math.max(1, caps.zoom.min); // 보통 1 이상
+      const max=caps.zoom.max || Math.max(3, min+1);
+      const step=caps.zoom.step || 0.1;
+      desiredZoom = Math.min(max, Math.max(min, desiredZoom||min));
+      els.zoomRange.min=min; els.zoomRange.max=max; els.zoomRange.step=step; els.zoomRange.value=desiredZoom;
+      els.zoomLabel.textContent = `${Number(desiredZoom).toFixed(2)}x`;
+    }
+    async function applyZoom(z){
+      if(!track) return;
+      const min=Math.max(1, caps.zoom.min);
+      const max=caps.zoom.max || Math.max(3, min+1);
+      const clamped = Math.min(max, Math.max(min, z));
+      try{
+        await track.applyConstraints({ advanced:[{ zoom: clamped }] });
+        desiredZoom = clamped;
+        els.zoomRange.value=clamped;
+        els.zoomLabel.textContent = `${clamped.toFixed(2)}x`;
+      }catch(e){ setStatus('줌 실패: '+e.message); }
+    }
+
+    function initPinch(){
+      let touching=false, startDist=0, startZoom=desiredZoom;
+      const el=els.video;
+      el.addEventListener('touchstart',(e)=>{
+        if(e.touches.length===2){
+          touching=true;
+          startDist = Math.hypot(
+            e.touches[0].clientX - e.touches[1].clientX,
+            e.touches[0].clientY - e.touches[1].clientY
+          );
+          startZoom = desiredZoom;
+        }
+      }, {passive:false});
+      el.addEventListener('touchmove',(e)=>{
+        if(touching && e.touches.length===2){
+          e.preventDefault();
+          const dist = Math.hypot(
+            e.touches[0].clientX - e.touches[1].clientX,
+            e.touches[0].clientY - e.touches[1].clientY
+          );
+          const scale = dist / (startDist||dist);
+          applyZoom(startZoom * scale);
+        }
+      }, {passive:false});
+      el.addEventListener('touchend',()=>{ touching=false; }, {passive:true});
+    }
+
+    async function startCamera(){
+      stopCamera();
+      try{
+        const id=els.sel.value;
+        const constraints={
+          video:{
+            deviceId:id?{exact:id}:undefined,
+            facingMode:'environment',
+            width:{ideal:1280,max:1920}, height:{ideal:720,max:1080}, frameRate:{ideal:30,max:60}
+          },
+          audio:false
+        };
+        const stream=await navigator.mediaDevices.getUserMedia(constraints);
+        currentStream=stream; els.video.srcObject=stream; await els.video.play();
+        els.btnStop.disabled=false; els.chosen.textContent=els.sel.options[els.sel.selectedIndex].text;
+        setStatus('실행 중');
+
+        // capabilities
+        track = stream.getVideoTracks()[0];
+        caps = track.getCapabilities ? track.getCapabilities() : {};
+        // 줌 UI 초기화 및 기본값 1x 적용
+        if(caps.zoom && typeof caps.zoom.min==='number'){
+          desiredZoom = Math.max(1, caps.zoom.min);
+          await applyZoom(desiredZoom);
+          updateZoomUI();
+          initPinch();
+        }
+        // 토치
+        if (caps.torch){
+          els.torchBox.style.display='flex';
+          torchOn=false; els.torchBtn.textContent='토치 켜기';
+        }else{
+          els.torchBox.style.display='none';
+        }
+
+        startScan();
+      }catch(e){ setStatus('실패: '+e.message); }
+    }
+
+    // 이벤트 바인딩
+    els.btnRefresh.onclick=refreshList;
+    els.btnStart.onclick=startCamera;
+    els.btnStop.onclick=()=>{stopCamera();setStatus('정지');};
+    els.btnToggleScan.onclick=()=>{ if(scanning){stopScan();els.btnToggleScan.textContent='스캔 재개';} else {startScan();els.btnToggleScan.textContent='스캔 일시정지';} };
+
+    // 줌 조작
+    els.zoomRange.addEventListener('input', (e)=> applyZoom(Number(e.target.value)));
+    els.zoomMinus.addEventListener('click', ()=> applyZoom(Number(els.zoomRange.value) - (Number(els.zoomRange.step)||0.1)));
+    els.zoomPlus.addEventListener('click', ()=> applyZoom(Number(els.zoomRange.value) + (Number(els.zoomRange.step)||0.1)));
+    els.zoomReset.addEventListener('click', ()=> applyZoom(1));
+
+    // 토치 토글
+    els.torchBtn.addEventListener('click', async ()=>{
+      if(!track) return;
+      try{
+        await track.applyConstraints({ advanced:[{ torch: !torchOn }] });
+        torchOn = !torchOn;
+        els.torchBtn.textContent = torchOn ? '토치 끄기' : '토치 켜기';
+      }catch(e){ setStatus('토치 실패: '+e.message); }
+    });
+
+    if(window.isSecureContext) await refreshList();
+    else setStatus('HTTPS에서만 동작합니다');
+  })();
+  </script>
+</body>
+</html>
